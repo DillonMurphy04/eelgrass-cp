@@ -40,7 +40,6 @@ The scripts reference local datasets and model `.emd` files that are not include
    `scripts/viz/raster_viz.py`
    `scripts/viz/raster_viz_transition.py`
    `scripts/viz/raster_viz_single_chip.py`
-   `scripts/viz/spatial_uncertainty_triptych.py`
 
 **Outputs**
 Most scripts write to an `OUT_DIR` configured at the top of the file. Typical outputs include:
