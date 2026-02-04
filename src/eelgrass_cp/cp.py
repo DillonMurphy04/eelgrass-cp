@@ -18,8 +18,14 @@ def qhat_split_conformal(scores: np.ndarray, alpha: float, cal_idx: np.ndarray) 
     return qhat_conformal(scores[cal_idx], alpha)
 
 
+def linear_score_transform(scores: np.ndarray, vnorm: np.ndarray, lam: float) -> np.ndarray:
+    """Linear shrink: s' = s / (1 + lambda * Vn)."""
+    return scores / (1.0 + lam * vnorm)
+
+
 def set_composition_binary(p0: np.ndarray, p1: np.ndarray, q: float,
-                           transform: Optional[callable] = None) -> Dict[str, float]:
+                           transform: Optional[callable] = None,
+                           return_k: bool = False) -> Dict[str, float]:
     s0 = 1 - p0
     s1 = 1 - p1
     if transform is not None:
@@ -30,7 +36,7 @@ def set_composition_binary(p0: np.ndarray, p1: np.ndarray, q: float,
     e = int(np.sum(k == 0))
     s = int(np.sum(k == 1))
     t = n - e - s
-    return {
+    out = {
         "n": n,
         "empty": e,
         "single": s,
@@ -39,6 +45,9 @@ def set_composition_binary(p0: np.ndarray, p1: np.ndarray, q: float,
         "pct_single": s / n if n else np.nan,
         "pct_two": t / n if n else np.nan,
     }
+    if return_k:
+        out["k"] = k
+    return out
 
 
 def per_class_coverage(scores: np.ndarray, y: np.ndarray, q: float) -> Dict[int, float]:
@@ -64,4 +73,3 @@ def binned_coverage(scores: np.ndarray, q: float, vnorm: np.ndarray, nbins: int 
             mids.append(0.5 * (edges[i] + edges[i + 1]))
             counts.append(int(m.sum()))
     return np.array(mids), np.array(covs), np.array(counts)
-

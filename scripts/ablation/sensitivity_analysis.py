@@ -4,7 +4,7 @@ Inputs: 2021 calibration cache + 2022 points cache (or run inference).
 Outputs: summary CSV/JSON, bootstrap CI CSV, and figures in OUT_DIR.
 """
 
-import os, json, importlib, warnings
+import os, json, warnings
 from pathlib import Path
 
 import numpy as np
@@ -13,13 +13,28 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
-from scipy.interpolate import interp1d
 
 import rasterio
-from rasterio.windows import Window
 import fiona
 from shapely.geometry import shape
 from tqdm import tqdm
+
+from src.eelgrass_cp import (
+    load_model_and_config,
+    norm_chip,
+    model_logits,
+    softmax_rows,
+    softmax_vec,
+    safe_read_chip,
+    normalize_var,
+    fit_sigma_fn_from_cal,
+    set_composition_binary,
+    per_class_coverage,
+    binned_coverage,
+    qhat_conformal,
+    linear_score_transform,
+    corr,
+)
 
 # ------------------------- User Config -------------------------
 
@@ -55,6 +70,7 @@ BINS_COND = 10   # variance deciles for conditional coverage
 CHIP_SIZE = 448
 GT_FIELD = "GROUND_TRU"
 FIG_DPI = 220
+LAMBDA_LINEAR = 3.0
 
 # Bootstrap
 BOOTSTRAP_B = 1000
@@ -67,96 +83,6 @@ METHOD_LABELS = {
     "linear": "Linear (lambda=3)",
     "nonparametric": "Nonparametric",
 }
-
-# ------------------------- Utilities -------------------------
-
-def load_model_and_config(emd_path):
-    with open(emd_path, "r") as f:
-        data = json.load(f)
-    model_name = data["ModelName"]
-    ModelClass = getattr(importlib.import_module("arcgis.learn"), model_name)
-    model_obj = ModelClass.from_model(data=None, emd_path=emd_path)
-    model = model_obj.learn.model.to(DEVICE).eval()
-
-    norm = data.get("NormalizationStats", None)
-    if norm:
-        cfg = {
-            "min": np.array(norm["band_min_values"], np.float32),
-            "max": np.array(norm["band_max_values"], np.float32),
-            "scaled_mean": np.array(norm["scaled_mean_values"], np.float32),
-            "scaled_std": np.array(norm["scaled_std_values"], np.float32),
-        }
-    else:
-        cfg = {
-            "min": np.array([0, 0, 0], np.float32),
-            "max": np.array([255, 255, 255], np.float32),
-            "scaled_mean": np.array([0.485, 0.456, 0.406], np.float32),
-            "scaled_std": np.array([0.229, 0.224, 0.225], np.float32),
-        }
-    return model, cfg
-
-def norm_chip(chip, cfg):
-    chip_hw_c = np.transpose(chip, (1, 2, 0)).astype(np.float32)
-    denom = np.maximum(cfg["max"] - cfg["min"], 1e-6)
-    scaled = (chip_hw_c - cfg["min"]) / denom
-    scaled = (scaled - cfg["scaled_mean"]) / np.maximum(cfg["scaled_std"], 1e-6)
-    return np.transpose(scaled, (2, 0, 1))
-
-@torch.no_grad()
-def model_logits(model, chip_norm):
-    x = torch.from_numpy(chip_norm).float().unsqueeze(0).to(DEVICE)
-    out = model(x)
-    if isinstance(out, (list, tuple)):
-        out = out[0]
-    return out.squeeze(0).detach().cpu().numpy().astype(np.float32)
-
-def softmax_rows(logit_rows, T):
-    z = logit_rows / max(T, 1e-8)
-    z = z - z.max(axis=1, keepdims=True)
-    e = np.exp(z)
-    return (e / np.clip(e.sum(axis=1, keepdims=True), 1e-12, None)).astype(np.float32)
-
-def softmax_vec(z):
-    z = z - np.max(z)
-    e = np.exp(z)
-    return e / np.clip(np.sum(e), 1e-12, None)
-
-def safe_read_chip(ds, row, col, size):
-    half = size // 2
-    win = Window(col - half, row - half, size, size)
-    chip = ds.read(window=win)  # (C,H,W)
-    if chip.shape[1] < size or chip.shape[2] < size:
-        return None
-    return chip
-
-def set_composition_binary_per_q(p0, p1, q, transform=None):
-    s0 = 1 - p0
-    s1 = 1 - p1
-    if transform is not None:
-        s0 = transform(s0)
-        s1 = transform(s1)
-    k = (s0 <= q).astype(np.int32) + (s1 <= q).astype(np.int32)
-    n = len(k)
-    e = int(np.sum(k == 0)); s = int(np.sum(k == 1)); t = n - e - s
-    return {
-        "n": n,
-        "empty": e,
-        "single": s,
-        "two": t,
-        "pct_empty": e/n if n else np.nan,
-        "pct_single": s/n if n else np.nan,
-        "pct_two": t/n if n else np.nan,
-        "k": k  # keep the raw set-size vector for bootstrap
-    }
-
-def corr(x, y):
-    x = np.asarray(x); y = np.asarray(y)
-    m = np.isfinite(x) & np.isfinite(y)
-    if m.sum() < 3:
-        return np.nan
-    x0 = x[m] - x[m].mean(); y0 = y[m] - y[m].mean()
-    denom = np.sqrt((x0**2).sum()) * np.sqrt((y0**2).sum())
-    return float((x0*y0).sum() / denom) if denom > 0 else np.nan
 
 # ------------------------- Data Loading -------------------------
 
@@ -192,11 +118,7 @@ def load_2021_pool_and_meta():
     cal_idx, test_idx = train_test_split(idx_all, test_size=CAL_TEST_SPLIT, random_state=SEED, shuffle=True)
     cal_sub_idx, _ = train_test_split(cal_idx, test_size=CAL_TUNE_FRAC, random_state=SEED, shuffle=True)
 
-    def normalize_var(v):
-        out = (v - V_MIN) / max(V_MAX - V_MIN, 1e-8)
-        return np.clip(out, 0.0, 1.0)
-
-    Vn_cp = normalize_var(V_cp)
+    Vn_cp = normalize_var(V_cp, V_MIN, V_MAX)
 
     return {
         "meta": meta,
@@ -221,7 +143,7 @@ def maybe_run_or_load_points_2022(T):
     ensemble = {}
     for key, emd in MODEL_EMDS.items():
         try:
-            m, cfg = load_model_and_config(emd)
+            m, cfg = load_model_and_config(emd, device=DEVICE, chip_size=CHIP_SIZE)
             ensemble[key] = {"model": m, "config": cfg}
             print(f"Loaded {key}")
         except Exception as e:
@@ -248,7 +170,7 @@ def maybe_run_or_load_points_2022(T):
             for key, pack in ensemble.items():
                 try:
                     chip_norm = norm_chip(chip, pack["config"])
-                    logits = model_logits(pack["model"], chip_norm)
+                    logits = model_logits(pack["model"], chip_norm, device=DEVICE)
                     per_model_logits.append(logits)
 
                     z = logits - logits.max(axis=0, keepdims=True)
@@ -290,44 +212,14 @@ def maybe_run_or_load_points_2022(T):
 
 # ------------------------- sigma_hat(V) + score transforms -------------------------
 
-def fit_sigma_fn_from_cal(Vn, s, cal_idx, bins=BINS_SIGMA):
-    df_cal = pd.DataFrame({"var": Vn[cal_idx], "score": s[cal_idx]})
-    df_cal["var_bin"] = pd.qcut(df_cal["var"], q=bins, duplicates="drop")
-    bin_means = df_cal.groupby("var_bin", observed=False)["score"].mean().reset_index()
-    bin_centers = np.array([iv.mid for iv in bin_means["var_bin"]], dtype=float)
-    sigma_means = bin_means["score"].values.astype(float)
-    return interp1d(bin_centers, sigma_means, kind="linear", fill_value="extrapolate", assume_sorted=False), (bin_centers, sigma_means)
-
-def linear_lambda3_scores(s, vnorm):
-    # lambda = 3: s' = s / (1 + 3 * Vn)
-    return s / (1.0 + 3.0 * vnorm)
-
 # ------------------------- Evaluation helpers -------------------------
-
-def binned_coverage(scores, q, vnorm, nbins=BINS_COND):
-    edges = np.quantile(vnorm, np.linspace(0,1,nbins+1))
-    edges[0], edges[-1] = 0.0, 1.0
-    covs, mids, counts = [], [], []
-    for i in range(nbins):
-        m = (vnorm >= edges[i]) & ((vnorm < edges[i+1]) if i < nbins-1 else (vnorm <= edges[i+1]))
-        if m.sum() == 0:
-            covs.append(np.nan); mids.append(0.5*(edges[i]+edges[i+1])); counts.append(0)
-        else:
-            covs.append(float(np.mean(scores[m] <= q)))
-            mids.append(0.5*(edges[i]+edges[i+1]))
-            counts.append(int(m.sum()))
-    return np.array(mids), np.array(covs), np.array(counts)
-
 def eval_one_method(scores, q, y, p0, p1, transform_for_sets=None, vnorm=None):
     covered = (scores <= q).astype(np.int8)
     cov_overall = float(np.mean(covered)) if len(covered) else float("nan")
 
-    per_class = {}
-    for c in [0,1]:
-        idx = (y == c)
-        per_class[c] = float(np.mean(covered[idx])) if np.any(idx) else np.nan
+    per_class = per_class_coverage(scores, y, q)
 
-    sc = set_composition_binary_per_q(p0, p1, q, transform=transform_for_sets)
+    sc = set_composition_binary(p0, p1, q, transform=transform_for_sets, return_k=True)
 
     cond_stats = None
     if vnorm is not None:
@@ -464,8 +356,7 @@ if __name__ == "__main__":
 
     # 2022 cache
     p0_22, p1_22, Vc_22, y_22, ids_22 = maybe_run_or_load_points_2022(T)
-    def normalize_var(v): return np.clip((v - V_MIN) / max(V_MAX - V_MIN, 1e-8), 0.0, 1.0)
-    Vn_22 = normalize_var(Vc_22)
+    Vn_22 = normalize_var(Vc_22, V_MIN, V_MAX)
     py_22 = np.where(y_22 == 1, p1_22, p0_22)
     s_22 = 1.0 - py_22
 
@@ -495,10 +386,10 @@ if __name__ == "__main__":
                 "set_transform_22": None,
             },
             "linear": {
-                "score_test": linear_lambda3_scores(s_test, vnorm_test),
-                "score_22": linear_lambda3_scores(s_22, vnorm_22),
-                "set_transform_test": (lambda s: s / (1.0 + 3.0 * vnorm_test)),
-                "set_transform_22": (lambda s: s / (1.0 + 3.0 * vnorm_22)),
+                "score_test": linear_score_transform(s_test, vnorm_test, LAMBDA_LINEAR),
+                "score_22": linear_score_transform(s_22, vnorm_22, LAMBDA_LINEAR),
+                "set_transform_test": (lambda s: linear_score_transform(s, vnorm_test, LAMBDA_LINEAR)),
+                "set_transform_22": (lambda s: linear_score_transform(s, vnorm_22, LAMBDA_LINEAR)),
             },
             "nonparametric": {
                 "score_test": s_test / sigma_fn(vnorm_test),
@@ -514,17 +405,12 @@ if __name__ == "__main__":
         if method_key == "vanilla":
             s_cal_sub = s_base_cp[cal_sub_idx]
         elif method_key == "linear":
-            s_cal_sub = linear_lambda3_scores(s_base_cp[cal_sub_idx], Vn_cp[cal_sub_idx])
+            s_cal_sub = linear_score_transform(s_base_cp[cal_sub_idx], Vn_cp[cal_sub_idx], LAMBDA_LINEAR)
         elif method_key == "nonparametric":
             s_cal_sub = s_base_cp[cal_sub_idx] / sigma_fn(Vn_cp[cal_sub_idx])
         else:
             raise ValueError(method_key)
-        # Exact finite-sample conformal quantile: ceil((n+1)*(1-alpha))/n
-        s = np.sort(np.asarray(s_cal_sub))
-        n = s.size
-        k = int(np.ceil((n + 1) * (1 - alpha)))
-        k = min(max(k, 1), n)  # clamp to [1, n]
-        return float(s[k - 1])
+        return qhat_conformal(s_cal_sub, alpha)
 
     # Loop over alphas and evaluate on both datasets
     for alpha in ALPHAS:

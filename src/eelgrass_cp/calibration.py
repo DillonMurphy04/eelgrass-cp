@@ -78,7 +78,32 @@ def fit_sigma_fn_from_cal(Vn: np.ndarray, scores: np.ndarray, cal_idx: np.ndarra
     bin_centers = np.array([iv.mid for iv in bin_means["var_bin"]], dtype=float)
     sigma_means = bin_means["score"].values.astype(float)
 
+    if bin_centers.size == 0:
+        def sigma_fn(x: np.ndarray) -> np.ndarray:
+            return np.full_like(np.asarray(x, dtype=float), np.nan, dtype=float)
+        return sigma_fn, (bin_centers, sigma_means)
+
+    order = np.argsort(bin_centers)
+    bin_centers = bin_centers[order]
+    sigma_means = sigma_means[order]
+
+    if bin_centers.size == 1:
+        def sigma_fn(x: np.ndarray) -> np.ndarray:
+            return np.full_like(np.asarray(x, dtype=float), sigma_means[0], dtype=float)
+        return sigma_fn, (bin_centers, sigma_means)
+
+    x0, x1 = bin_centers[0], bin_centers[1]
+    y0, y1 = sigma_means[0], sigma_means[1]
+    xN1, xN = bin_centers[-2], bin_centers[-1]
+    yN1, yN = sigma_means[-2], sigma_means[-1]
+    slope_lo = (y1 - y0) / max(x1 - x0, 1e-12)
+    slope_hi = (yN - yN1) / max(xN - xN1, 1e-12)
+
     def sigma_fn(x: np.ndarray) -> np.ndarray:
-        return np.interp(x, bin_centers, sigma_means, left=sigma_means[0], right=sigma_means[-1])
+        x = np.asarray(x, dtype=float)
+        y = np.interp(x, bin_centers, sigma_means)
+        y = np.where(x < x0, y0 + slope_lo * (x - x0), y)
+        y = np.where(x > xN, yN + slope_hi * (x - xN), y)
+        return y
 
     return sigma_fn, (bin_centers, sigma_means)

@@ -17,7 +17,14 @@ import matplotlib.pyplot as plt
 
 from scipy.stats import pearsonr
 from pyproj import CRS, Transformer
-from src.eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import (
+    qhat_conformal,
+    softmax_rows,
+    normalize_var,
+    fit_sigma_fn_from_cal,
+    set_composition_binary,
+    linear_score_transform,
+)
 
 
 # ------------------------- User Config -------------------------
@@ -45,43 +52,9 @@ P_COARSE = 11  # 2^11 = 2048 cells per axis
 
 
 # ------------------------- Helpers -------------------------
-def normalize_var(v, vmin, vmax):
-    return np.clip((v - vmin) / max(vmax - vmin, 1e-12), 0.0, 1.0)
-
-def score_transform_linear(s, vnorm, lam):
-    return s / (1.0 + lam * vnorm)
-
-def set_composition_binary(p0, p1, q, mode="vanilla", vnorm=None, lam=None, sigma_fn=None):
-    s0 = 1.0 - p0
-    s1 = 1.0 - p1
-    if mode == "linear":
-        s0 = score_transform_linear(s0, vnorm, lam)
-        s1 = score_transform_linear(s1, vnorm, lam)
-    elif mode == "nonparametric":
-        s0 = s0 / sigma_fn(vnorm)
-        s1 = s1 / sigma_fn(vnorm)
-
-    k = (s0 <= q).astype(np.int32) + (s1 <= q).astype(np.int32)
-    n = len(k)
-    e = int(np.sum(k == 0))
-    s = int(np.sum(k == 1))
-    t = n - e - s
-    return {
-        "n": n, "empty": e, "single": s, "two": t,
-        "pct_empty": e / n if n else np.nan,
-        "pct_single": s / n if n else np.nan,
-        "pct_two": t / n if n else np.nan
-    }
-
-def softmax_rows(logits, T):
-    z = logits / max(T, 1e-8)
-    z = z - z.max(axis=1, keepdims=True)
-    e = np.exp(z)
-    return e / np.clip(e.sum(axis=1, keepdims=True), 1e-12, None)
 
 def compute_sigma_and_qhat_nonparametric(meta_json_path, cache_2021_npz, bins=20):
     from sklearn.model_selection import train_test_split
-    from scipy.interpolate import interp1d
 
     with open(meta_json_path, "r") as f:
         meta = json.load(f)
@@ -114,14 +87,7 @@ def compute_sigma_and_qhat_nonparametric(meta_json_path, cache_2021_npz, bins=20
     cal_idx, _ = train_test_split(idx_all, test_size=CAL_TEST_SPLIT, random_state=SEED_LOCAL, shuffle=True)
     cal_sub_idx, _ = train_test_split(cal_idx, test_size=CAL_TUNE_FRAC, random_state=SEED_LOCAL, shuffle=True)
 
-    df_cal = pd.DataFrame({"var": Vn[cal_idx], "score": s[cal_idx]})
-    df_cal["var_bin"] = pd.qcut(df_cal["var"], q=bins, duplicates="drop")
-
-    bin_means = df_cal.groupby("var_bin", observed=False)["score"].mean().reset_index()
-    centers = np.array([iv.mid for iv in bin_means["var_bin"]], dtype=float)
-    sigma = bin_means["score"].values.astype(float)
-
-    sigma_fn = interp1d(centers, sigma, kind="linear", fill_value="extrapolate", assume_sorted=False)
+    sigma_fn, _ = fit_sigma_fn_from_cal(Vn, s, cal_idx, bins=bins)
 
     cal_scores_norm = s[cal_idx] / sigma_fn(Vn[cal_idx])
     pos_in_cal = {g: i for i, g in enumerate(cal_idx)}
@@ -325,14 +291,14 @@ py = np.where(y == 1, p1, p0).astype(np.float64)
 base_scores = 1.0 - py
 
 covered_vanilla = (base_scores <= qhat_vanilla).astype(np.int32)
-scores_linear = score_transform_linear(base_scores, Vn, LAMBDA_LINEAR)
+scores_linear = linear_score_transform(base_scores, Vn, LAMBDA_LINEAR)
 covered_linear = (scores_linear <= qhat_linear).astype(np.int32)
 scores_nonparam = base_scores / sigma_fn(Vn)
 covered_nonparam = (scores_nonparam <= qhat_nonparametric).astype(np.int32)
 
-sc_van = set_composition_binary(p0, p1, qhat_vanilla, mode="vanilla")
-sc_lin = set_composition_binary(p0, p1, qhat_linear, mode="linear", vnorm=Vn, lam=LAMBDA_LINEAR)
-sc_nonparam = set_composition_binary(p0, p1, qhat_nonparametric, mode="nonparametric", vnorm=Vn, sigma_fn=sigma_fn)
+sc_van = set_composition_binary(p0, p1, qhat_vanilla)
+sc_lin = set_composition_binary(p0, p1, qhat_linear, transform=lambda s: linear_score_transform(s, Vn, LAMBDA_LINEAR))
+sc_nonparam = set_composition_binary(p0, p1, qhat_nonparametric, transform=lambda s: s / sigma_fn(Vn))
 
 
 # ------------------------- DataFrame + per-block metrics -------------------------
@@ -357,9 +323,19 @@ df = pd.DataFrame({
 
 def block_metrics(group):
     idx = group.index.values
-    sc_v = set_composition_binary(p0[idx], p1[idx], qhat_vanilla, mode="vanilla")
-    sc_l = set_composition_binary(p0[idx], p1[idx], qhat_linear, mode="linear", vnorm=Vn[idx], lam=LAMBDA_LINEAR)
-    sc_h = set_composition_binary(p0[idx], p1[idx], qhat_nonparametric, mode="nonparametric", vnorm=Vn[idx], sigma_fn=sigma_fn)
+    sc_v = set_composition_binary(p0[idx], p1[idx], qhat_vanilla)
+    sc_l = set_composition_binary(
+        p0[idx],
+        p1[idx],
+        qhat_linear,
+        transform=lambda s, vn=Vn[idx]: linear_score_transform(s, vn, LAMBDA_LINEAR),
+    )
+    sc_h = set_composition_binary(
+        p0[idx],
+        p1[idx],
+        qhat_nonparametric,
+        transform=lambda s, vn=Vn[idx]: s / sigma_fn(vn),
+    )
     return pd.Series({
         "n_points": len(group),
         "coverage_vanilla": float(group["covered_vanilla"].mean()),

@@ -3,12 +3,12 @@
 This repository is a cleaned, shareable version of the thesis scripts for eelgrass semantic segmentation uncertainty and conformal prediction. It centralizes repeated utilities into a small Python package and organizes the workflow scripts by purpose (calibration, evaluation, spatial analysis, and visualizations).
 
 **Highlights**
-- Shared utilities are found in `src/eelgrass_cp` and are reused by the main scripts.
+- Shared utilities live in `src/eelgrass_cp` (modeling, calibration, CP helpers, metrics) and are reused by the main scripts.
 - Scripts are grouped in `scripts/` by domain (conformal, spatial, sensitivity, visualization, inference).
 - Outputs are written to user-specified directories so results are reproducible without changing code structure.
 
 **Repository Layout**
-- `src/eelgrass_cp` - Shared utilities (model loading, normalization, CP helpers).
+- `src/eelgrass_cp` - Shared utilities (model loading, normalization, CP helpers, metrics).
 - `scripts/conformal` - Calibration and conformal prediction workflows.
 - `scripts/spatial` - Spatial blocking analyses (Morton ordering).
 - `scripts/ablation` - Sensitivity analysis experiments.

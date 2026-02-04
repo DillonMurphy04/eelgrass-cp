@@ -7,11 +7,9 @@ import os, json
 import numpy as np
 import matplotlib.pyplot as plt
 import rasterio
-from rasterio.plot import show as rioshow
 import fiona
 from shapely.geometry import shape
-from pathlib import Path
-from src.eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import qhat_conformal, softmax_rows, normalize_var, fit_sigma_fn_from_cal, linear_score_transform
 
 # -------- Config (match sensitivity_analysis.py) --------
 RASTER_2022 = r"D:\\2022 Data\\Morro Bay Eelgrass AI - Rasterized Imagery\\2022_raster_final.tif"
@@ -24,13 +22,9 @@ CACHE_2021_NPZ = r"D:\\4 year training data\\2021\\ensemble_2020_2021_pixel_cali
 ALPHA   = 0.10           # should match meta["alpha"]
 METHODS = ["vanilla", "linear", "nonparametric"]
 FIG_DPI = 220
+LAMBDA_LINEAR = 3.0
 
 # -------- Helpers --------
-
-def normalize_var(v, vmin, vmax):
-    return np.clip((v - vmin) / max(vmax - vmin, 1e-8), 0.0, 1.0)
-
-
 def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
                                          lam_linear=3.0, bins=20):
     """
@@ -45,8 +39,6 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
       -  Quantile-binned sigma(Vn) fit on cal subset
       -  q = (1-alpha) quantile of transformed scores on cal_sub
     """
-    import pandas as pd
-    from scipy.interpolate import interp1d
     from sklearn.model_selection import train_test_split
 
     D = np.load(cache_2021_npz, allow_pickle=True)
@@ -60,13 +52,6 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
     SEED   = int(meta.get("seed", 42))
     CAL_TEST_SPLIT = float(meta["splits"]["CAL_TEST_SPLIT"])
     CAL_TUNE_FRAC  = float(meta["splits"]["CAL_TUNE_FRAC"])
-
-    # Softmax w/ T and CP pool
-    def softmax_rows(logit_rows, T):
-        z = logit_rows / max(T, 1e-8)
-        z = z - z.max(axis=1, keepdims=True)
-        e = np.exp(z)
-        return (e / np.clip(e.sum(axis=1, keepdims=True), 1e-12, None)).astype(np.float32)
 
     PLOG_all = D["PLOG"]
     Y_all    = D["Y"]
@@ -93,17 +78,7 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
     )
 
     # sigma(Vn) via quantile bins on cal_idx
-    import pandas as pd
-    df = pd.DataFrame({"var": Vn_cp[cal_idx], "score": s_cp[cal_idx]})
-    df["var_bin"] = pd.qcut(df["var"], q=bins, duplicates="drop")
-    bin_means = df.groupby("var_bin", observed=False)["score"].mean().reset_index()
-    bin_centers = np.array([iv.mid for iv in bin_means["var_bin"]], dtype=float)
-    sigma_means = bin_means["score"].values.astype(float)
-
-    sigma_fn = interp1d(
-        bin_centers, sigma_means, kind="linear",
-        fill_value="extrapolate", assume_sorted=False
-    )
+    sigma_fn, _ = fit_sigma_fn_from_cal(Vn_cp, s_cp, cal_idx, bins=bins)
 
     # Mask for cal_sub in cal_idx index space
     pos_in_cal = {g: i for i, g in enumerate(cal_idx)}
@@ -119,7 +94,7 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
     qhat_nonparam = qhat_conformal(s_nonparam_cal[mask_cal], ALPHA_meta)
 
     # Linear (lambda=lam_linear) q fallback: s' = s / (1 + lambda Vn)
-    s_linear_cal = s_cal / (1.0 + lam_linear * vn_cal)
+    s_linear_cal = linear_score_transform(s_cal, vn_cal, lam_linear)
     qhat_linear_fallback = qhat_conformal(s_linear_cal[mask_cal], ALPHA_meta)
 
     return sigma_fn, (V_MIN, V_MAX), qhat_nonparam, qhat_linear_fallback
@@ -149,7 +124,7 @@ Vn = normalize_var(Vc, V_MIN, V_MAX)
 sigma_fn, _, qhat_nonparam_2021, qhat_linear_fallback = compute_sigma_fn_and_qhats_from_2021(
     META_JSON,
     CACHE_2021_NPZ,
-    lam_linear=3.0,
+    lam_linear=LAMBDA_LINEAR,
     bins=20
 )
 
@@ -180,11 +155,11 @@ if qh_linear is None:
 qh_nonparam = qhat_nonparam_2021
 
 # Define transforms (lambda=3 now)
-s_linear  = s / (1 + 3.0 * Vn)      # Linear lambda=3
+s_linear  = linear_score_transform(s, Vn, LAMBDA_LINEAR)      # Linear lambda=3
 s_nonparam  = s / sigma_fn(Vn)        # Nonparametric normalizer
 
 # For sets, reuse transformed scores for each class-wise score
-trans_linear = lambda sclass: sclass / (1 + 3.0 * Vn)
+trans_linear = lambda sclass: linear_score_transform(sclass, Vn, LAMBDA_LINEAR)
 trans_nonparam  = lambda sclass: sclass / sigma_fn(Vn)
 
 # Set membership per method

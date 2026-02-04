@@ -3,15 +3,25 @@ Single-chip visualization: RGB + set overlays for vanilla, linear (lambda=3), an
 Outputs a 2x2 panel figure and optional center-pixel diagnostics.
 """
 
-import os, json, importlib, warnings
+import os, json, warnings
 import numpy as np
 import rasterio
-from rasterio.windows import Window
 import torch
 import fiona
 from shapely.geometry import shape
 import matplotlib.pyplot as plt
-from src.eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import (
+    qhat_conformal,
+    load_model_and_config,
+    norm_chip,
+    model_probs,
+    safe_read_chip,
+    ensure_uint8_rgb,
+    softmax_rows,
+    normalize_var,
+    fit_sigma_fn_from_cal,
+    linear_score_transform,
+)
 
 # -------------------------------------------------------
 # User Options
@@ -61,109 +71,13 @@ OVERLAY_ALPHA = 0.55
 
 
 # -------------------------------------------------------
-# Utilities (from  chip script)
-# -------------------------------------------------------
-def load_model_and_config(emd_path):
-    """Load arcgis.learn model from EMD and extract normalization config."""
-    with open(emd_path, "r") as f:
-        data = json.load(f)
-
-    model_name = data["ModelName"]
-    ModelClass = getattr(importlib.import_module("arcgis.learn"), model_name)
-
-    model_obj = ModelClass.from_model(data=None, emd_path=emd_path)
-    model = model_obj.learn.model.to(DEVICE)
-    model.eval()
-
-    if "NormalizationStats" in data:
-        norm = data["NormalizationStats"]
-        config = {
-            "chip_height": data.get("ImageHeight", CHIP_SIZE),
-            "chip_width": data.get("ImageWidth", CHIP_SIZE),
-            "min": np.array(norm["band_min_values"], dtype=np.float32),
-            "max": np.array(norm["band_max_values"], dtype=np.float32),
-            "scaled_mean": np.array(norm["scaled_mean_values"], dtype=np.float32),
-            "scaled_std": np.array(norm["scaled_std_values"], dtype=np.float32),
-        }
-    else:
-        config = {
-            "chip_height": data.get("ImageHeight", CHIP_SIZE),
-            "chip_width": data.get("ImageWidth", CHIP_SIZE),
-            "min": np.array([0.0, 0.0, 0.0], dtype=np.float32),
-            "max": np.array([255.0, 255.0, 255.0], dtype=np.float32),
-            "scaled_mean": np.array([0.485, 0.456, 0.406], dtype=np.float32),
-            "scaled_std": np.array([0.229, 0.224, 0.225], dtype=np.float32),
-        }
-
-    return model, config
-
-
-def norm_chip(chip, config):
-    """Per-EMD normalization: min-max to [0,1], then standardize with scaled_mean/std."""
-    chip_hw_c = np.transpose(chip, (1, 2, 0)).astype(np.float32)  # (H, W, C)
-    denom = (config["max"] - config["min"])
-    denom = np.where(denom == 0, 1.0, denom)
-    scaled = (chip_hw_c - config["min"]) / denom
-    scaled = (scaled - config["scaled_mean"]) / np.where(config["scaled_std"] == 0, 1.0, config["scaled_std"])
-    return np.transpose(scaled, (2, 0, 1))  # (C, H, W)
-
-
-@torch.no_grad()
-def model_probs(model, chip_norm):
-    """Forward pass -> softmax probabilities. Returns numpy float32 (C, H, W)."""
-    x = torch.from_numpy(chip_norm).float().unsqueeze(0).to(DEVICE)  # (1, C, H, W)
-    out = model(x)
-    if isinstance(out, (list, tuple)):
-        out = out[0]
-    probs = torch.nn.functional.softmax(out, dim=1)
-    return probs.squeeze(0).detach().cpu().numpy().astype(np.float32)  # (C, H, W)
-
-
-def safe_read_chip(ds, row, col, size):
-    half = size // 2
-    window = Window(col - half, row - half, size, size)
-    chip = ds.read(window=window)  # (C, H, W)
-    if chip.shape[1] < size or chip.shape[2] < size:
-        return None
-    return chip
-
-
-def ensure_uint8_rgb(chip):
-    """Return an RGB uint8 array (H, W, 3) for visualization."""
-    c = min(3, chip.shape[0])
-    rgb = np.moveaxis(chip[:c], 0, -1)
-    arr = rgb.astype(np.float32)
-    vmin = np.percentile(arr, 1)
-    vmax = np.percentile(arr, 99)
-    if vmax <= vmin:
-        vmax = vmin + 1.0
-    arr = (np.clip((arr - vmin) / (vmax - vmin), 0, 1) * 255.0).astype(np.uint8)
-    if arr.shape[2] < 3:
-        arr = np.repeat(arr, 3, axis=2)
-    return arr
-
-
-# -------------------------------------------------------
 # CP / set overlay helpers
 # -------------------------------------------------------
-def normalize_var(v, vmin, vmax):
-    return np.clip((v - vmin) / max(vmax - vmin, 1e-8), 0.0, 1.0)
-
-
-def softmax_rows(logit_rows, T):
-    z = logit_rows / max(T, 1e-8)
-    z = z - z.max(axis=1, keepdims=True)
-    e = np.exp(z)
-    return (e / np.clip(e.sum(axis=1, keepdims=True), 1e-12, None)).astype(np.float32)
-
-
 def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz, lam_linear=3.0, bins=20):
     """
     Reconstruct sigma_hat(Vn) and qhats using ONLY the 2021 CP cache + meta.
     Matches  raster_viz.py.
     """
-    import pandas as pd
-    from scipy.interpolate import interp1d
     from sklearn.model_selection import train_test_split
 
     D = np.load(cache_2021_npz, allow_pickle=True)
@@ -203,16 +117,7 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz, lam_lin
     cal_sub_set = set(cal_sub_idx.tolist())
     mask_cal_sub = np.array([i in cal_sub_set for i in cal_idx], dtype=bool)
 
-    df = pd.DataFrame({"var": Vn_cp[cal_idx], "score": s_cp[cal_idx]})
-    df["var_bin"] = pd.qcut(df["var"], q=bins, duplicates="drop")
-    bin_means = df.groupby("var_bin", observed=False)["score"].mean().reset_index()
-    bin_centers = np.array([iv.mid for iv in bin_means["var_bin"]], dtype=float)
-    sigma_means = bin_means["score"].values.astype(float)
-
-    sigma_fn = interp1d(
-        bin_centers, sigma_means, kind="linear",
-        fill_value="extrapolate", assume_sorted=False
-    )
+    sigma_fn, _ = fit_sigma_fn_from_cal(Vn_cp, s_cp, cal_idx, bins=bins)
 
     s_cal  = s_cp[cal_idx]
     vn_cal = Vn_cp[cal_idx]
@@ -220,7 +125,7 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz, lam_lin
     s_nonparam_cal = s_cal / sigma_fn(vn_cal)
     qhat_nonparam = qhat_conformal(s_nonparam_cal[mask_cal_sub], alpha_meta)
 
-    s_linear_cal = s_cal / (1.0 + lam_linear * vn_cal)
+    s_linear_cal = linear_score_transform(s_cal, vn_cal, lam_linear)
     qhat_linear = qhat_conformal(s_linear_cal[mask_cal_sub], alpha_meta)
 
     return sigma_fn, (V_MIN, V_MAX), qhat_nonparam, qhat_linear
@@ -307,7 +212,7 @@ def main():
     ensemble = {}
     for key, emd in MODEL_EMDS.items():
         try:
-            model, config = load_model_and_config(emd)
+            model, config = load_model_and_config(emd, device=DEVICE, chip_size=CHIP_SIZE)
             ensemble[key] = {"model": model, "config": config}
             print(f"  -  Loaded {key}")
         except Exception as e:
@@ -345,7 +250,7 @@ def main():
     for key, pack in ensemble.items():
         try:
             chip_norm = norm_chip(chip, pack["config"])
-            probs = model_probs(pack["model"], chip_norm)  # (C,H,W)
+            probs = model_probs(pack["model"], chip_norm, device=DEVICE)  # (C,H,W)
 
             if num_classes is None:
                 num_classes = probs.shape[0]
@@ -423,7 +328,7 @@ def main():
     Vn = normalize_var(var_map, V_MIN, V_MAX).astype(np.float32)
 
     # Transforms
-    trans_lin = lambda s: s / (1.0 + float(LAM) * Vn)
+    trans_lin = lambda s: linear_score_transform(s, Vn, float(LAM))
     trans_np  = lambda s: s / sigma_fn(Vn)
 
     def infer_sets(qhat, trans=None):

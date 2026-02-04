@@ -11,7 +11,7 @@ import fiona
 from shapely.geometry import shape
 from rasterio.windows import from_bounds
 from rasterio.enums import Resampling
-from src.eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import qhat_conformal, softmax_rows, normalize_var, fit_sigma_fn_from_cal, linear_score_transform
 
 # -------- Config --------
 RASTER_2022 = r"D:\\2022 Data\\Morro Bay Eelgrass AI - Rasterized Imagery\\2022_raster_final.tif"
@@ -27,11 +27,9 @@ CACHE_2021_NPZ = r"D:\\4 year training data\\2021\\ensemble_2020_2021_pixel_cali
 
 ALPHA   = 0.10
 FIG_DPI = 220
+LAMBDA_LINEAR = 3.0
 
 # -------- Helpers --------
-def normalize_var(v, vmin, vmax):
-    return np.clip((v - vmin) / max(vmax - vmin, 1e-8), 0.0, 1.0)
-
 def pretty_title(tag):
     if tag == "linear":
         return "Linear (lambda=3)"
@@ -47,9 +45,7 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
       -  Linear (lambda=lam_linear):          s' = s / (1 + lambda Vn)
     using ONLY the 2021 CP cache + meta.
     """
-    from scipy.interpolate import interp1d
     from sklearn.model_selection import train_test_split
-    import pandas as pd
 
     D = np.load(cache_2021_npz, allow_pickle=True)
     with open(meta_json_path, "r") as f:
@@ -62,12 +58,6 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
     SEED   = int(meta.get("seed", 42))
     CAL_TEST_SPLIT = float(meta["splits"]["CAL_TEST_SPLIT"])
     CAL_TUNE_FRAC  = float(meta["splits"]["CAL_TUNE_FRAC"])
-
-    def softmax_rows(logit_rows, T):
-        z = logit_rows / max(T, 1e-8)
-        z = z - z.max(axis=1, keepdims=True)
-        e = np.exp(z)
-        return (e / np.clip(e.sum(axis=1, keepdims=True), 1e-12, None)).astype(np.float32)
 
     PLOG_all = D["PLOG"]
     Y_all    = D["Y"]
@@ -93,17 +83,7 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
     )
 
     # sigma(Vn) via quantile bins on cal_idx
-    df = pd.DataFrame({"var": Vn_cp[cal_idx], "score": s_cp[cal_idx]})
-    df["var_bin"] = pd.qcut(df["var"], q=bins, duplicates="drop")
-    bin_means = df.groupby("var_bin", observed=False)["score"].mean().reset_index()
-
-    bin_centers = np.array([iv.mid for iv in bin_means["var_bin"]], dtype=float)
-    sigma_means = bin_means["score"].values.astype(float)
-
-    sigma_fn = interp1d(
-        bin_centers, sigma_means, kind="linear",
-        fill_value="extrapolate", assume_sorted=False
-    )
+    sigma_fn, _ = fit_sigma_fn_from_cal(Vn_cp, s_cp, cal_idx, bins=bins)
 
     # mask cal_sub within cal_idx
     pos_in_cal = {g: i for i, g in enumerate(cal_idx)}
@@ -120,7 +100,7 @@ def compute_sigma_fn_and_qhats_from_2021(meta_json_path, cache_2021_npz,
     qhat_nonparam = qhat_conformal(s_nonparam_cal[mask_cal], alpha)
 
     # Linear fallback qhat
-    s_linear_cal = s_cal / (1.0 + lam_linear * vn_cal)
+    s_linear_cal = linear_score_transform(s_cal, vn_cal, lam_linear)
     qhat_linear_fallback = qhat_conformal(s_linear_cal[mask_cal], alpha)
 
     return sigma_fn, (V_MIN, V_MAX), qhat_nonparam, qhat_linear_fallback
@@ -141,7 +121,7 @@ Vn = normalize_var(Vc, V_MIN, V_MAX)
 
 # Rebuild sigma_fn + qhats from 2021
 sigma_fn, _, qhat_nonparam_2021, qhat_linear_fallback = compute_sigma_fn_and_qhats_from_2021(
-    META_JSON, CACHE_2021_NPZ, lam_linear=3.0, bins=20
+    META_JSON, CACHE_2021_NPZ, lam_linear=LAMBDA_LINEAR, bins=20
 )
 
 # Vanilla qhat from meta
@@ -194,7 +174,7 @@ def build_label_map(p0, p1, y, qh, trans=None):
 
 labels = {}
 labels["vanilla"] = build_label_map(p0, p1, y, qh_van, trans=None)
-labels["linear"] = build_label_map(p0, p1, y, qh_linear, trans=lambda s: s / (1.0 + 3.0 * Vn))
+labels["linear"] = build_label_map(p0, p1, y, qh_linear, trans=lambda s: linear_score_transform(s, Vn, LAMBDA_LINEAR))
 labels["nonparametric"] = build_label_map(p0, p1, y, qh_nonparam, trans=lambda s: s / sigma_fn(Vn))
 
 # -------- Read raster crop + point coords --------

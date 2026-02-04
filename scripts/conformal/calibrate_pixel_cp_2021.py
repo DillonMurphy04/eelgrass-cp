@@ -19,7 +19,7 @@ from src.eelgrass_cp import load_model_and_config, norm_chip, model_logits
 from src.eelgrass_cp import softmax_rows
 from src.eelgrass_cp import TemperatureScaler, fit_temperature, stratified_indices
 from src.eelgrass_cp import qhat_split_conformal, set_composition_binary
-from src.eelgrass_cp import per_class_coverage, normalize_var
+from src.eelgrass_cp import per_class_coverage, normalize_var, linear_score_transform
 
 # ========================= User Config =========================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -199,17 +199,14 @@ setcomp_van_test = set_composition_binary(P[test_idx, 0], P[test_idx, 1], qhat_v
 
 
 def eval_rule_all_lambdas(rule_name, lambdas):
-    def score_transform_linear(base, vnorm, lam):
-        return base / (1.0 + lam * vnorm)
-
     out = {}
     for lam in lambdas:
-        s = score_transform_linear(base_scores, Vn, lam)
+        s = linear_score_transform(base_scores, Vn, lam)
         q = qhat_split_conformal(s, ALPHA, cal_sub_idx)
         cov = float(np.mean(s[test_idx] <= q)) if len(test_idx) else float("nan")
         pc = per_class_coverage(s, Y, q)
         sc = set_composition_binary(P[test_idx, 0], P[test_idx, 1], q,
-                                    transform=(lambda s0: score_transform_linear(s0, Vn[test_idx], lam)))
+                                    transform=(lambda s0: linear_score_transform(s0, Vn[test_idx], lam)))
         out[str(lam)] = {
             "lambda": float(lam),
             "qhat": float(q),
