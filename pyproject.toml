@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eelgrass-cp"
+version = "0.1.0"
+description = "Conformal prediction and uncertainty analysis for eelgrass segmentation."
+readme = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "torch",
+  "rasterio",
+  "fiona",
+  "shapely",
+  "scikit-learn",
+  "matplotlib",
+  "tqdm",
+  "scipy",
+  "pyproj",
+  "Pillow",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
