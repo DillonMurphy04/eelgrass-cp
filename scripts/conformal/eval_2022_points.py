@@ -1,5 +1,5 @@
 """
-2022 point evaluation using a calibration summary (vanilla + adaptive).
+2022 point evaluation using a calibration summary (vanilla + linear).
 Outputs: per-point CSVs, summary JSON, and optional visualizations.
 """
 
@@ -38,6 +38,9 @@ CALIB_SUMMARY_JSON = r"D:\calibration\summary.json"
 CHIP_SIZE = 448
 GT_FIELD = "GROUND_TRU"
 N_CLASSES = 2
+
+# Used when calibration meta provides a per-lambda linear table.
+LAM_LINEAR = 3.0
 
 MODEL_EMDS = {
     "unet_2020": r"D:\Unet_model\Unet2020\Unet2020.emd",
@@ -91,13 +94,28 @@ with open(CALIB_SUMMARY_JSON, "r") as f:
 ALPHA = float(calib.get("alpha", 0.10))
 T = float(calib.get("temperature_T", 1.0))
 qhat_van = float(calib["pixel_level"]["vanilla"]["qhat"])
-qhat_ad = float(calib["pixel_level"]["adaptive"]["qhat"])
-LAM_AD = float(calib["pixel_level"]["adaptive"]["lambda"])
+
+qhat_linear = None
+lam_linear = None
+adaptive = calib.get("pixel_level", {}).get("adaptive", {})
+if "linear" in adaptive and isinstance(adaptive["linear"], dict):
+    lam_linear = float(LAM_LINEAR)
+    linear_pack = adaptive["linear"]
+    for lam_str, pack in linear_pack.items():
+        if abs(float(lam_str) - lam_linear) < 1e-8:
+            qhat_linear = float(pack["qhat"])
+            break
+elif "qhat" in adaptive and "lambda" in adaptive:
+    lam_linear = float(adaptive["lambda"])
+    qhat_linear = float(adaptive["qhat"])
+
+if qhat_linear is None or lam_linear is None:
+    raise RuntimeError("Linear qhat/lambda not found in calibration summary.")
 
 VAR_MIN = calib.get("variance_min", None)
 VAR_MAX = calib.get("variance_max", None)
 
-print(f"  alpha={ALPHA:.3f}  T={T:.3f}  qhat_van={qhat_van:.3f}  qhat_ad={qhat_ad:.3f}  lambda={LAM_AD:.2f}")
+print(f"  alpha={ALPHA:.3f}  T={T:.3f}  qhat_van={qhat_van:.3f}  qhat_linear={qhat_linear:.3f}  lambda={lam_linear:.2f}")
 
 print("Loading 2020+2021 ensemble models...")
 ensemble = {}
@@ -227,13 +245,13 @@ p0 = df["p0_center"].values
 p_true = np.where(y == 1, p1, p0)
 
 scores_van = 1.0 - p_true
-scores_ad = scores_van * (1.0 + LAM_AD * Vn)
+scores_linear = scores_van / (1.0 + lam_linear * Vn)
 
 covered_van = (scores_van <= qhat_van)
-covered_ad = (scores_ad <= qhat_ad)
+covered_linear = (scores_linear <= qhat_linear)
 
 coverage_van = float(np.mean(covered_van)) if len(covered_van) else float("nan")
-coverage_ad = float(np.mean(covered_ad)) if len(covered_ad) else float("nan")
+coverage_linear = float(np.mean(covered_linear)) if len(covered_linear) else float("nan")
 
 # Set composition (binary)
 
@@ -241,7 +259,7 @@ def set_composition_row(p0, p1, q, vnorm=None, lam=None):
     if lam is None:
         k = int((1 - p0 <= q) + (1 - p1 <= q))
     else:
-        k = int(((1 - p0) * (1 + lam * vnorm) <= q) + ((1 - p1) * (1 + lam * vnorm) <= q))
+        k = int(((1 - p0) / (1 + lam * vnorm) <= q) + ((1 - p1) / (1 + lam * vnorm) <= q))
     if k == 0:
         return "empty"
     if k == 1:
@@ -265,10 +283,10 @@ def comp_counts(labels):
     }
 
 comp_v = [set_composition_row(p0[i], p1[i], qhat_van) for i in range(len(df))]
-comp_a = [set_composition_row(p0[i], p1[i], qhat_ad, Vn[i], LAM_AD) for i in range(len(df))]
+comp_a = [set_composition_row(p0[i], p1[i], qhat_linear, Vn[i], lam_linear) for i in range(len(df))]
 
 setcomp_van = comp_counts(comp_v)
-setcomp_ad = comp_counts(comp_a)
+setcomp_linear = comp_counts(comp_a)
 
 # Per-class coverage
 cov_class = {}
@@ -277,33 +295,33 @@ for c in [0, 1]:
     if len(idx) > 0:
         cov_class[c] = {
             "vanilla": float(np.mean(scores_van[idx] <= qhat_van)),
-            "adaptive": float(np.mean(scores_ad[idx] <= qhat_ad)),
+            "linear": float(np.mean(scores_linear[idx] <= qhat_linear)),
             "n": int(len(idx)),
         }
     else:
-        cov_class[c] = {"vanilla": np.nan, "adaptive": np.nan, "n": 0}
+        cov_class[c] = {"vanilla": np.nan, "linear": np.nan, "n": 0}
 
 # Save augmented CSV + summary
 
 df_out = df.copy()
 df_out["score_van"] = scores_van
-df_out["score_ad"] = scores_ad
+df_out["score_linear"] = scores_linear
 df_out["covered_van"] = covered_van.astype(int)
-df_out["covered_ad"] = covered_ad.astype(int)
+df_out["covered_linear"] = covered_linear.astype(int)
 df_out["Vn_center"] = Vn
 df_out["set_van"] = comp_v
-df_out["set_ad"] = comp_a
+df_out["set_linear"] = comp_a
 csv_aug = os.path.join(OUT_DIR, "points_with_cp_fields.csv")
 df_out.to_csv(csv_aug, index=False)
 
 summary = {
     "alpha": ALPHA,
     "T": T,
-    "qhat": {"vanilla": qhat_van, "adaptive": qhat_ad},
-    "lambda_adaptive": LAM_AD,
+    "qhat": {"vanilla": qhat_van, "linear": qhat_linear},
+    "lambda_linear": lam_linear,
     "variance_norm": {"min": VAR_MIN, "max": VAR_MAX},
-    "coverage": {"vanilla": coverage_van, "adaptive": coverage_ad},
-    "set_composition": {"vanilla": setcomp_van, "adaptive": setcomp_ad},
+    "coverage": {"vanilla": coverage_van, "linear": coverage_linear},
+    "set_composition": {"vanilla": setcomp_van, "linear": setcomp_linear},
     "per_class_coverage": cov_class,
     "counts": {"N_points": int(len(df))},
     "files": {
@@ -316,9 +334,9 @@ with open(os.path.join(OUT_DIR, "cp_eval_summary_2022_points.json"), "w") as f:
 
 print("\nCP coverage on 2022 points")
 print(f"  Vanilla : coverage={coverage_van:.3f} | sets: {setcomp_van}")
-print(f"  Adaptive: coverage={coverage_ad:.3f} | lambda={LAM_AD:.2f} | sets: {setcomp_ad}")
-print("  Per-class coverage (n, cov_van, cov_ad):")
+print(f"  Linear : coverage={coverage_linear:.3f} | lambda={lam_linear:.2f} | sets: {setcomp_linear}")
+print("  Per-class coverage (n, cov_van, cov_linear):")
 for c in [0, 1]:
-    print(f"    class {c}: n={cov_class[c]['n']},  van={cov_class[c]['vanilla']:.3f},  ad={cov_class[c]['adaptive']:.3f}")
+    print(f"    class {c}: n={cov_class[c]['n']},  van={cov_class[c]['vanilla']:.3f},  lin={cov_class[c]['linear']:.3f}")
 
 print(f"\nDone. Outputs saved to: {OUT_DIR}")

@@ -1,7 +1,6 @@
 from typing import Dict, Optional
 
 import numpy as np
-from sklearn.metrics import jaccard_score
 
 
 def qhat_conformal(scores_cal: np.ndarray, alpha: float) -> float:
@@ -16,23 +15,7 @@ def qhat_conformal(scores_cal: np.ndarray, alpha: float) -> float:
 
 
 def qhat_split_conformal(scores: np.ndarray, alpha: float, cal_idx: np.ndarray) -> float:
-    s = np.sort(scores[cal_idx])
-    n = len(s)
-    if n == 0:
-        return float("nan")
-    k = int(np.ceil((n + 1) * (1 - alpha)))
-    k = min(max(k, 1), n)
-    return float(s[k - 1])
-
-
-def score_transform(base: np.ndarray, vnorm: np.ndarray, lam: float, rule: str) -> np.ndarray:
-    if rule == "multiplicative":
-        return base * (1 + lam * vnorm)
-    if rule == "normalized" or rule == "linear":
-        return base / (1 + lam * vnorm)
-    if rule == "certainty_boost":
-        return base / (1 + lam * (1 - vnorm))
-    raise ValueError(f"Unknown rule: {rule}")
+    return qhat_conformal(scores[cal_idx], alpha)
 
 
 def set_composition_binary(p0: np.ndarray, p1: np.ndarray, q: float,
@@ -81,14 +64,6 @@ def binned_coverage(scores: np.ndarray, q: float, vnorm: np.ndarray, nbins: int 
             mids.append(0.5 * (edges[i] + edges[i + 1]))
             counts.append(int(m.sum()))
     return np.array(mids), np.array(covs), np.array(counts)
-
-
-def compute_iou(pred: np.ndarray, gt: np.ndarray, n_classes: int = 2) -> np.ndarray:
-    mask = (gt >= 0)
-    try:
-        return jaccard_score(gt[mask].ravel(), pred[mask].ravel(), average=None, labels=list(range(n_classes)))
-    except Exception:
-        return np.zeros(n_classes)
 
 
 def entropy_map(P: np.ndarray) -> np.ndarray:

@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from eelgrass_cp import load_model_and_config, norm_chip, model_logits
 from eelgrass_cp import softmax_vec
 from eelgrass_cp import safe_read_chip
-from eelgrass_cp import score_transform, set_composition_binary, per_class_coverage
+from eelgrass_cp import set_composition_binary, per_class_coverage
 
 # ========================= User Config =========================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -183,7 +183,7 @@ def evaluate_method(q, scores_method):
 def summarize_setcomp(q, rule=None, lam=None):
     if lam is None or rule is None:
         return set_composition_binary(p0, p1, q)
-    transform = lambda s: score_transform(s, Vn, lam, rule)
+    transform = lambda s: s / (1.0 + lam * Vn)
     return set_composition_binary(p0, p1, q, transform=transform)
 
 
@@ -213,7 +213,7 @@ for lam in COMPARE_LAMBDAS:
         warnings.warn(f"No qhat for linear lambda={lam} in meta; skipping.")
         continue
     q = qhats[RULE][lam]
-    scores_m = score_transform(base_scores, Vn, lam, RULE)
+    scores_m = base_scores / (1.0 + lam * Vn)
     cov, pc = evaluate_method(q, scores_m)
     sc = summarize_setcomp(q, rule=RULE, lam=lam)
     methods_summary[RULE][str(lam)] = {
@@ -241,7 +241,7 @@ for lam in COMPARE_LAMBDAS:
     if lam not in qhats[RULE]:
         continue
     q = qhats[RULE][lam]
-    s = score_transform(base_scores, Vn, lam, RULE)
+    s = base_scores / (1.0 + lam * Vn)
     per_point[f"{RULE}_score_lam{lam}"] = s
     per_point[f"{RULE}_covered_lam{lam}"] = (s <= q).astype(np.int32)
 

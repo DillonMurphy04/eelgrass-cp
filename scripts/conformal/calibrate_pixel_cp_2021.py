@@ -18,7 +18,7 @@ from sklearn.model_selection import train_test_split
 from eelgrass_cp import load_model_and_config, norm_chip, model_logits
 from eelgrass_cp import softmax_rows
 from eelgrass_cp import TemperatureScaler, fit_temperature, stratified_indices
-from eelgrass_cp import qhat_split_conformal, score_transform, set_composition_binary
+from eelgrass_cp import qhat_split_conformal, set_composition_binary
 from eelgrass_cp import per_class_coverage, normalize_var
 
 # ========================= User Config =========================
@@ -199,14 +199,17 @@ setcomp_van_test = set_composition_binary(P[test_idx, 0], P[test_idx, 1], qhat_v
 
 
 def eval_rule_all_lambdas(rule_name, lambdas):
+    def score_transform_linear(base, vnorm, lam):
+        return base / (1.0 + lam * vnorm)
+
     out = {}
     for lam in lambdas:
-        s = score_transform(base_scores, Vn, lam, rule_name)
+        s = score_transform_linear(base_scores, Vn, lam)
         q = qhat_split_conformal(s, ALPHA, cal_sub_idx)
         cov = float(np.mean(s[test_idx] <= q)) if len(test_idx) else float("nan")
         pc = per_class_coverage(s, Y, q)
         sc = set_composition_binary(P[test_idx, 0], P[test_idx, 1], q,
-                                    transform=(lambda s0: score_transform(s0, Vn[test_idx], lam, rule_name)))
+                                    transform=(lambda s0: score_transform_linear(s0, Vn[test_idx], lam)))
         out[str(lam)] = {
             "lambda": float(lam),
             "qhat": float(q),
@@ -262,9 +265,7 @@ meta = {
         "scores_base": "base = 1 - p_y after temperature",
         "variance_norm_stats": "min/max from calibration subset only; applied to both cal and test.",
         "adaptive_forms": {
-            "multiplicative": "s = base * (1 + lambda Vn)",
             "linear": "s = base / (1 + lambda Vn)",
-            "certainty_boost": "s = base / (1 + lambda (1 - Vn))",
         },
     },
 }
