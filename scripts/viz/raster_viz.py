@@ -11,7 +11,7 @@ from rasterio.plot import show as rioshow
 import fiona
 from shapely.geometry import shape
 from pathlib import Path
-from eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import qhat_conformal
 
 # -------- Config (match sensitivity_analysis.py) --------
 RASTER_2022 = r"D:\\2022 Data\\Morro Bay Eelgrass AI - Rasterized Imagery\\2022_raster_final.tif"

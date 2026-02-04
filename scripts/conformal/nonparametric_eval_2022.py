@@ -18,7 +18,7 @@ from rasterio.windows import Window
 import fiona
 from shapely.geometry import shape
 from tqdm import tqdm
-from eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import qhat_conformal
 
 # ========================= User Config =========================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

@@ -15,11 +15,11 @@ from PIL import Image
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 
-from eelgrass_cp import load_model_and_config, norm_chip, model_logits
-from eelgrass_cp import softmax_rows
-from eelgrass_cp import TemperatureScaler, fit_temperature, stratified_indices
-from eelgrass_cp import qhat_split_conformal, set_composition_binary
-from eelgrass_cp import per_class_coverage, normalize_var
+from src.eelgrass_cp import load_model_and_config, norm_chip, model_logits
+from src.eelgrass_cp import softmax_rows
+from src.eelgrass_cp import TemperatureScaler, fit_temperature, stratified_indices
+from src.eelgrass_cp import qhat_split_conformal, set_composition_binary
+from src.eelgrass_cp import per_class_coverage, normalize_var
 
 # ========================= User Config =========================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

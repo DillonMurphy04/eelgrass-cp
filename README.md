@@ -19,6 +19,8 @@ This repository is a cleaned, shareable version of the thesis scripts for eelgra
 **Quickstart**
 1. Use an environment with Python 3.9+. If running from the ArcGIS Pro Python Command Prompt, most dependencies are already available.
 2. If needed, install dependencies: `pip install -r requirements.txt`
+3. Run scripts from the repo root so imports like `from src.eelgrass_cp import ...` resolve.
+4. Example: `python scripts\conformal\calibrate_pixel_cp_2021.py`
 
 **Data & Paths**
 The scripts reference local datasets and model `.emd` files that are not included in this repository. Update the path constants at the top of each script to match the local machine. See `docs/paths_and_data.md` for a concise checklist of required files.

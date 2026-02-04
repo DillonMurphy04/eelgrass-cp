@@ -11,7 +11,7 @@ import fiona
 from shapely.geometry import shape
 from rasterio.windows import from_bounds
 from rasterio.enums import Resampling
-from eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import qhat_conformal
 
 # -------- Config --------
 RASTER_2022 = r"D:\\2022 Data\\Morro Bay Eelgrass AI - Rasterized Imagery\\2022_raster_final.tif"

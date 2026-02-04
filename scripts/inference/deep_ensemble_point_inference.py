@@ -17,8 +17,8 @@ from shapely.geometry import shape
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
 
-from eelgrass_cp import load_model_and_config, norm_chip, model_probs
-from eelgrass_cp import safe_read_chip, ensure_uint8_rgb
+from src.eelgrass_cp import load_model_and_config, norm_chip, model_probs
+from src.eelgrass_cp import safe_read_chip, ensure_uint8_rgb
 
 # -------------------------------------------------------
 # User Options

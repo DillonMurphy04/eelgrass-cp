@@ -19,10 +19,10 @@ import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-from eelgrass_cp import load_model_and_config, norm_chip, model_logits
-from eelgrass_cp import softmax_vec
-from eelgrass_cp import safe_read_chip
-from eelgrass_cp import set_composition_binary, per_class_coverage
+from src.eelgrass_cp import load_model_and_config, norm_chip, model_logits
+from src.eelgrass_cp import softmax_vec
+from src.eelgrass_cp import safe_read_chip
+from src.eelgrass_cp import set_composition_binary, per_class_coverage
 
 # ========================= User Config =========================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 from scipy.stats import pearsonr
 from pyproj import CRS, Transformer
-from eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import qhat_conformal
 
 
 # ------------------------- User Config -------------------------

@@ -10,7 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
-from eelgrass_cp import softmax_rows, normalize_var
+from src.eelgrass_cp import softmax_rows, normalize_var
 
 # ========================= Config =========================
 CAL_BASE_DIR = r"D:\4 year training data\2021\ensemble_2020_2021_pixel_calib_cache"

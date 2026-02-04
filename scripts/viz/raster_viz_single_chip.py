@@ -11,7 +11,7 @@ import torch
 import fiona
 from shapely.geometry import shape
 import matplotlib.pyplot as plt
-from eelgrass_cp import qhat_conformal
+from src.eelgrass_cp import qhat_conformal
 
 # -------------------------------------------------------
 # User Options

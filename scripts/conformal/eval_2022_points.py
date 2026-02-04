@@ -17,9 +17,9 @@ from shapely.geometry import shape
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from eelgrass_cp import load_model_and_config, norm_chip, model_logits
-from eelgrass_cp import softmax_vec
-from eelgrass_cp import ensure_uint8_rgb, safe_read_chip
+from src.eelgrass_cp import load_model_and_config, norm_chip, model_logits
+from src.eelgrass_cp import softmax_vec
+from src.eelgrass_cp import ensure_uint8_rgb, safe_read_chip
 
 # ----------------------------- User Options -----------------------------
 SAVE_VISUALIZATIONS = True
