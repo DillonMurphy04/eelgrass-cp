@@ -65,7 +65,3 @@ def binned_coverage(scores: np.ndarray, q: float, vnorm: np.ndarray, nbins: int 
             counts.append(int(m.sum()))
     return np.array(mids), np.array(covs), np.array(counts)
 
-
-def entropy_map(P: np.ndarray) -> np.ndarray:
-    Pc = np.clip(P, 1e-8, 1.0)
-    return -np.sum(Pc * np.log(Pc), axis=0).astype(np.float32)

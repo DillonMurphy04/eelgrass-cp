@@ -7,8 +7,6 @@ from .calibration import TemperatureScaler, fit_temperature, stratified_indices,
 from .calibration import fit_sigma_fn_from_cal
 from .cp import qhat_split_conformal, qhat_conformal
 from .cp import set_composition_binary, per_class_coverage, binned_coverage
-from .cp import entropy_map
-from .spatial import morton_code_2d, quantize_to_grid, morton_order
 
 __all__ = [
     "load_model_and_config",
@@ -33,8 +31,4 @@ __all__ = [
     "set_composition_binary",
     "per_class_coverage",
     "binned_coverage",
-    "entropy_map",
-    "morton_code_2d",
-    "quantize_to_grid",
-    "morton_order",
 ]

@@ -8,7 +8,7 @@ This repository is a cleaned, shareable version of the thesis scripts for eelgra
 - Outputs are written to user-specified directories so results are reproducible without changing code structure.
 
 **Repository Layout**
-- `src/eelgrass_cp` - Shared utilities (model loading, normalization, CP helpers, spatial blocking helpers).
+- `src/eelgrass_cp` - Shared utilities (model loading, normalization, CP helpers).
 - `scripts/conformal` - Calibration and conformal prediction workflows.
 - `scripts/spatial` - Spatial blocking analyses (Morton ordering).
 - `scripts/ablation` - Sensitivity analysis experiments.
